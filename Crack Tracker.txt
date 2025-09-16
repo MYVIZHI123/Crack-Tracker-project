@@ -1,0 +1,92 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+from skimage.feature import local_binary_pattern
+from google.colab import files
+
+# Upload image
+uploaded = files.upload()
+filename = list(uploaded.keys())[0]
+img = cv2.imread(filename)
+gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+# Step 1: Preprocess
+blur = cv2.GaussianBlur(gray, (5, 5), 0)
+
+# Step 2: Canny Edge Detection (main detection)
+edges = cv2.Canny(blur, 100, 200)
+
+# Step 3: LBP Feature Extraction (for texture refinement)
+radius = 1
+n_points = 8 * radius
+lbp = local_binary_pattern(blur, n_points, radius, method='uniform')
+lbp_mask = (lbp > 2).astype(np.uint8) * 255  # Ignore smooth areas (low texture)
+
+# Step 4: Dilate edges to connect broken cracks
+kernel = np.ones((3, 3), np.uint8)
+dilated = cv2.dilate(edges, kernel, iterations=2)
+
+# Step 5: Apply LBP mask to remove smooth areas
+refined_edges = cv2.bitwise_and(dilated, lbp_mask)
+
+# Step 6: Watershed Segmentation
+# Convert to 3-channel for watershed
+markers_img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+_, thresh = cv2.threshold(refined_edges, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+dist_transform = cv2.distanceTransform(thresh, cv2.DIST_L2, 5)
+_, sure_fg = cv2.threshold(dist_transform, 0.3 * dist_transform.max(), 255, 0)
+sure_fg = np.uint8(sure_fg)
+unknown = cv2.subtract(thresh, sure_fg)
+_, markers = cv2.connectedComponents(sure_fg)
+markers = markers + 1
+markers[unknown == 255] = 0
+markers = cv2.watershed(markers_img, markers)
+
+# Visualize Watershed Result
+watershed_result = img.copy()
+watershed_result[markers == -1] = [0, 0, 255]  # Red boundary lines
+
+# Step 7: Find contours from refined edges
+contours, _ = cv2.findContours(refined_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+# Step 8: Filter based on area
+min_crack_area = 3000
+crack_mask = np.zeros_like(gray)
+
+for cnt in contours:
+    area = cv2.contourArea(cnt)
+    if area > min_crack_area:
+        cv2.drawContours(crack_mask, [cnt], -1, 255, -1)
+
+# Step 9: Apply mask to grayscale
+crack_output = cv2.bitwise_and(gray, gray, mask=crack_mask)
+
+# Step 10: Final Status
+crack_detected = np.count_nonzero(crack_mask) > 0
+status = "✅ Crack Detected!" if crack_detected else "❌ No Crack Detected"
+
+# Step 11: Display results
+plt.figure(figsize=(12, 8))
+
+plt.subplot(2, 2, 1)
+plt.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+plt.title("Original Image")
+plt.axis("off")
+
+plt.subplot(2, 2, 2)
+plt.imshow(refined_edges, cmap='gray')
+plt.title("Refined Edges (Canny + LBP)")
+plt.axis("off")
+
+plt.subplot(2, 2, 3)
+plt.imshow(cv2.cvtColor(watershed_result, cv2.COLOR_BGR2RGB))
+plt.title("Watershed Segmentation")
+plt.axis("off")
+
+plt.subplot(2, 2, 4)
+plt.imshow(crack_output, cmap='gray')
+plt.title(f"Crack Detection Result - {status}")
+plt.axis("off")
+
+plt.tight_layout()
+plt.show()
